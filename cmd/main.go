@@ -19,22 +19,21 @@ import (
 
 var (
 	videoURL    = flag.String("url", "", "URL of the video file")
+	videoFile   = flag.String("file", "", "Path to the video file")
 	privateKey  = flag.String("key", "", "Private key for signing the event")
 	title       = flag.String("title", "", "Title of the video")
 	description = flag.String("description", "", "Description of the video")
 	publishedAt = flag.String("published_at", "", "Timestamp when the video was published (unix seconds)")
-	duration    = flag.Int("duration", 0, "Duration of the video in seconds")
-	transmit    = flag.Bool("transmit", false, "Transmit the event to relays")
-	t           = flag.Bool("t", false, "Transmit the event to relays (short flag)")
+	relay       = flag.Bool("relay", false, "Transmit the event to relays")
+	r           = flag.Bool("r", false, "Transmit the event to relays (short flag)")
+	descriptor  = flag.String("descriptor", "", "Descriptor for the 'd' tag")
+	blossom     = flag.String("blossom", "https://haven.girino.org", "Base URL for the blossom server")
 	hexKey      = ""
 )
 
 func parseAndInitParams() {
 	flag.Parse()
 
-	if *title == "" {
-		*title = *videoURL
-	}
 	if *description == "" {
 		*description = ""
 	}
@@ -53,23 +52,44 @@ func parseAndInitParams() {
 }
 
 func main() {
-	// Define command line flags
-	// Set default values if not provided
-	// Convert private key from nsec format to hex if necessary
 	parseAndInitParams()
+
+	if *videoURL == "" && *videoFile == "" {
+		log.Fatalf("Either -url or -file must be provided")
+	}
+
+	var videoPath string
+	if *videoFile != "" {
+		uploadInfo, err := utils.UploadFile(*blossom, *videoFile, hexKey)
+		if err != nil {
+			log.Fatalf("Error uploading video file: %v", err)
+		}
+		*videoURL = uploadInfo["url"].(string)
+		*publishedAt = fmt.Sprintf("%d", int64(uploadInfo["uploaded"].(float64)))
+		videoPath = *videoFile
+	} else {
+		var err error
+		videoPath, err = utils.DownloadVideo(*videoURL)
+		if err != nil {
+			log.Fatalf("Error downloading video: %v", err)
+		}
+		defer os.Remove(videoPath)
+	}
+	// Set title to videoURL if title is unset
+	if *title == "" {
+		*title = *videoURL
+	}
 
 	// Validate input parameters
 	if err := utils.ValidateInput(*videoURL, hexKey, *title, *publishedAt); err != nil {
 		log.Fatalf("Input validation error: %v", err)
 	}
 
-	// Download the video
-	// Get video dimensions
-	// Calculate SHA-256 hash of the video file
-	width, height, videoHash := extractVideoInfo(videoURL)
+	// Extract video information
+	width, height, videoHash := extractVideoInfo(videoPath)
 
 	// Create the NIP-71 event with the extracted video information
-	event := createNip71Event(height, width, videoHash, title, publishedAt, videoURL, description, duration)
+	event := createNip71Event(height, width, videoHash, title, publishedAt, videoURL, description, descriptor)
 
 	// Sign the event with the provided private key
 	if err := event.Sign(hexKey); err != nil {
@@ -79,19 +99,13 @@ func main() {
 	// Output the event data (for demonstration purposes)
 	fmt.Println("Generated Event Data:", event)
 
-	// Transmit the event to relays if the transmit flag is set
-	if *transmit || *t {
+	// Transmit the event to relays if the relay flag is set
+	if *relay || *r {
 		publishEvent(event, hexKey)
 	}
 }
 
-func extractVideoInfo(videoURL *string) (int, int, string) {
-	videoPath, err := utils.DownloadVideo(*videoURL)
-	if err != nil {
-		log.Fatalf("Error downloading video: %v", err)
-	}
-	defer os.Remove(videoPath)
-
+func extractVideoInfo(videoPath string) (int, int, string) {
 	width, height, err := utils.GetVideoDimensions(videoPath)
 	if err != nil {
 		log.Fatalf("Error getting video dimensions: %v", err)
@@ -111,17 +125,22 @@ func extractVideoInfo(videoURL *string) (int, int, string) {
 	return width, height, videoHash
 }
 
-func createNip71Event(height int, width int, videoHash string, title *string, publishedAt *string, videoURL *string, description *string, duration *int) nostr.Event {
+func createNip71Event(height int, width int, videoHash string, title *string, publishedAt *string, videoURL *string, description *string, descriptor *string) nostr.Event {
 	eventKind := 34235
 	if height > width {
 		eventKind = 34236
+	}
+
+	dTag := videoHash
+	if *descriptor != "" {
+		dTag = *descriptor
 	}
 
 	event := nostr.Event{
 		Kind:      eventKind,
 		CreatedAt: nostr.Now(),
 		Tags: nostr.Tags{
-			{"d", videoHash},
+			{"d", dTag},
 			{"title", *title},
 			{"published_at", *publishedAt},
 			{"imeta", fmt.Sprintf("dim %dx%d", width, height), "url " + *videoURL, "m video/mp4"},
@@ -129,9 +148,6 @@ func createNip71Event(height int, width int, videoHash string, title *string, pu
 		Content: *description,
 	}
 
-	if *duration > 0 {
-		event.Tags = append(event.Tags, nostr.Tag{"duration", fmt.Sprintf("%d", *duration)})
-	}
 	return event
 }
 
