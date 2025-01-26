@@ -1,13 +1,23 @@
+// Copyright (c) 2023 Girino Vey!
+// This file is part of the go-cli-utility project, which is licensed under the MIT License.
+// See the LICENSE file in the project root for more information.
+
 package utils
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -20,6 +30,7 @@ import (
 	"github.com/h2non/filetype/types"
 	"github.com/nbd-wtf/go-nostr"
 	"github.com/nbd-wtf/go-nostr/nip19"
+	_ "golang.org/x/image/webp"
 )
 
 // ValidateInput checks if the provided video URL, private key, title, and published_at are valid
@@ -77,30 +88,24 @@ func DownloadVideo(videoURL string) (string, error) {
 	return file.Name(), nil
 }
 
-// GetVideoDimensions uses ffprobe to get the dimensions of the video
-func GetVideoDimensions(filePath string) (int, int, error) {
-
-	// Validate if the file is a video using filetype library
+// GetImageDimensions returns the width and height of an image file
+func GetImageDimensions(filePath string) (int, int, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
 		return 0, 0, err
 	}
 	defer file.Close()
 
-	head := make([]byte, 261)
-	_, err = file.Read(head)
+	img, _, err := image.DecodeConfig(file)
 	if err != nil {
 		return 0, 0, err
 	}
 
-	kind, err := filetype.Match(head)
-	if err != nil {
-		return 0, 0, err
-	}
+	return img.Width, img.Height, nil
+}
 
-	if kind == types.Unknown || !strings.HasPrefix(kind.MIME.Value, "video") {
-		return 0, 0, errors.New("the file is not a valid video")
-	}
+// GetVideoDimensions uses ffprobe to get the dimensions of the video
+func GetVideoDimensions(filePath string) (int, int, error) {
 
 	// Get video dimensions using ffprobe
 	cmd := exec.Command("ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0", "'"+filePath+"'")
@@ -126,6 +131,57 @@ func GetVideoDimensions(filePath string) (int, int, error) {
 	}
 
 	return width, height, nil
+}
+
+func GetMediaDimensions(filePath string, fileType string) (int, int, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer file.Close()
+
+	head := make([]byte, 261)
+	_, err = file.Read(head)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	kind, err := filetype.Match(head)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	if kind == types.Unknown {
+		return 0, 0, errors.New("unknown file type")
+	}
+
+	if strings.HasPrefix(kind.MIME.Value, "image") && fileType == "image" {
+		return GetImageDimensions(filePath)
+	} else if strings.HasPrefix(kind.MIME.Value, "video") && fileType == "video" {
+		return GetVideoDimensions(filePath)
+	} else {
+		return 0, 0, errors.New("unsupported media type")
+	}
+}
+
+func ExtractMediaInfo(imagePath string, fileType string) (int, int, string, error) {
+	width, height, err := GetMediaDimensions(imagePath, fileType) // Assuming the same function can be used for images
+	if err != nil {
+		return 0, 0, "", err
+	}
+
+	file, err := os.Open(imagePath)
+	if err != nil {
+		return 0, 0, "", err
+	}
+	defer file.Close()
+
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return 0, 0, "", err
+	}
+	imageHash := fmt.Sprintf("%x", hash.Sum(nil))
+	return width, height, imageHash, nil
 }
 
 func UploadFile(server, filePath, privKey string) (map[string]interface{}, error) {
@@ -195,7 +251,9 @@ func UploadFile(server, filePath, privKey string) (map[string]interface{}, error
 	defer resp.Body.Close()
 
 	// Check response
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+	if resp.StatusCode != http.StatusOK &&
+		resp.StatusCode != http.StatusCreated &&
+		resp.StatusCode != http.StatusAccepted {
 		bodyBytes, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("upload failed: %s", string(bodyBytes))
 	}
@@ -232,7 +290,7 @@ func createAuthorizationEvent(privKey string, verb string, tags [][]string) (str
 	secKey := privKey
 	if strings.HasPrefix(privKey, "nsec") {
 		var err error
-		secKey, err = convertNIP19ToHex(privKey)
+		secKey, err = ConvertNIP19ToHex(privKey)
 		if err != nil {
 			return "", err
 		}
@@ -261,7 +319,7 @@ func createAuthorizationEvent(privKey string, verb string, tags [][]string) (str
 	return encodedJSON, nil
 }
 
-func convertNIP19ToHex(key string) (string, error) {
+func ConvertNIP19ToHex(key string) (string, error) {
 	if strings.HasPrefix(key, "nsec") {
 		_, decoded, err := nip19.Decode(key)
 		if err != nil {
@@ -270,4 +328,58 @@ func convertNIP19ToHex(key string) (string, error) {
 		return decoded.(string), nil
 	}
 	return key, nil
+}
+
+func PublishEvent(event nostr.Event, hexKey string, relays []string) {
+	for _, relayURL := range relays {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		relay, err := nostr.RelayConnect(ctx, relayURL)
+		if err != nil {
+			log.Printf("Error connecting to relay %s: %v", relayURL, err)
+			continue
+		}
+		defer relay.Close()
+
+		err = relay.Publish(ctx, event)
+		if err != nil {
+			if strings.HasPrefix(err.Error(), "msg: auth-required:") {
+
+				authErr := relay.Auth(ctx, func(authEvent *nostr.Event) error {
+					return authEvent.Sign(hexKey)
+				})
+				if authErr != nil {
+					log.Printf("Error sending auth event to relay %s: %v", relayURL, authErr)
+					continue
+				}
+
+				err = relay.Publish(ctx, event)
+				if err != nil {
+					log.Printf("Error publishing event to relay %s after auth: %v", relayURL, err)
+				} else {
+					fmt.Printf("Published event to relay %s successfully after auth\n", relayURL)
+				}
+			} else {
+				log.Printf("Error publishing event to relay %s: %v", relayURL, err)
+			}
+		} else {
+			fmt.Printf("Published event to relay %s successfully\n", relayURL)
+		}
+	}
+}
+
+func LoadRelaysFromFile(filePath string) []string {
+	file, err := os.Open(filePath)
+	if err != nil {
+		log.Fatalf("Error opening %s: %v", filePath, err)
+	}
+	defer file.Close()
+
+	decoder := json.NewDecoder(file)
+	var relays []string
+	err = decoder.Decode(&relays)
+	if err != nil {
+		log.Fatalf("Error decoding %s: %v", filePath, err)
+	}
+	return relays
 }

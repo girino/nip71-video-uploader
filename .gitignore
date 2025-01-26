@@ -1,0 +1,4 @@
+*.exe
+bip71-cli
+bip68-cli
+relays.json
