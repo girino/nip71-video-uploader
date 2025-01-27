@@ -38,7 +38,7 @@ var (
 	relay       = flag.String("relay", "", "Relay address or path to relays.json file")
 	r           = flag.String("r", "", "Relay address or path to relays.json file (short flag)")
 	blossom     = flag.String("blossom", "https://cdn.nostrcheck.me", "Base URL for the blossom server")
-	hexKey      = ""
+	signer      utils.EventSigner
 )
 
 func init() {
@@ -57,9 +57,9 @@ func parseAndInitParams() {
 	}
 
 	var err error
-	hexKey, err = utils.ConvertNIP19ToHex(*privateKey)
+	signer, err = utils.NewLocalSigner(*privateKey)
 	if err != nil {
-		log.Fatalf("Error converting NIP-19 key to hex: %v", err)
+		log.Fatalf("Error creating event signer: %v", err)
 	}
 }
 
@@ -80,22 +80,22 @@ func main() {
 		log.Fatalf("At least one -url or -file must be provided")
 	}
 
-	var imetaTags []string
+	var imetaTags [][]string
 
 	for _, imageFile := range imageFiles {
-		uploadInfo, err := utils.UploadFile(*blossom, imageFile, hexKey)
+		uploadInfo, err := utils.UploadFile(*blossom, imageFile, signer)
 		if err != nil {
 			log.Fatalf("Error uploading image file: %v", err)
 		}
 		imageURL := uploadInfo["url"].(string)
 		*publishedAt = fmt.Sprintf("%d", int64(uploadInfo["uploaded"].(float64)))
 
-		width, height, _, err := utils.ExtractMediaInfo(imageFile, "image")
+		width, height, hash, err := utils.ExtractMediaInfo(imageFile, "image")
 		if err != nil {
 			log.Fatalf("Error extracting image information: %v", err)
 		}
-
-		imetaTags = append(imetaTags, fmt.Sprintf("dim %dx%d url %s m image/jpeg", width, height, imageURL))
+		tag := nostr.Tag{"imeta", fmt.Sprintf("dim %dx%d", width, height), fmt.Sprintf("url %s", imageURL), "m image/jpeg", fmt.Sprintf("x %s", hash)}
+		imetaTags = append(imetaTags, tag)
 	}
 
 	for _, imageURL := range imageURLs {
@@ -105,19 +105,19 @@ func main() {
 		}
 		defer os.Remove(imagePath)
 
-		width, height, _, err := utils.ExtractMediaInfo(imagePath, "image")
+		width, height, hash, err := utils.ExtractMediaInfo(imagePath, "image")
 		if err != nil {
 			log.Fatalf("Error extracting image information: %v", err)
 		}
-
-		imetaTags = append(imetaTags, fmt.Sprintf("dim %dx%d url %s m image/jpeg", width, height, imageURL))
+		tag := nostr.Tag{"imeta", fmt.Sprintf("dim %dx%d", width, height), fmt.Sprintf("url %s", imageURL), "m image/jpeg", fmt.Sprintf("x %s", hash)}
+		imetaTags = append(imetaTags, tag)
 	}
 
 	// Create the NIP-68 event with the extracted image information
 	event := createNip68Event(imetaTags, title, publishedAt, description)
 
 	// Sign the event with the provided private key
-	if err := event.Sign(hexKey); err != nil {
+	if err := signer.Sign(&event); err != nil {
 		log.Fatalf("Error signing event: %v", err)
 	}
 
@@ -131,12 +131,12 @@ func main() {
 			relays = loadRelays(*r)
 		}
 		if len(relays) > 0 {
-			utils.PublishEvent(event, hexKey, relays)
+			utils.PublishEvent(event, signer, relays)
 		}
 	}
 }
 
-func createNip68Event(imetaTags []string, title *string, publishedAt *string, description *string) nostr.Event {
+func createNip68Event(imetaTags [][]string, title *string, publishedAt *string, description *string) nostr.Event {
 	eventKind := 20 // Event kind for picture-first feeds
 
 	tags := nostr.Tags{
@@ -145,7 +145,7 @@ func createNip68Event(imetaTags []string, title *string, publishedAt *string, de
 	}
 
 	for _, imeta := range imetaTags {
-		tags = append(tags, nostr.Tag{"imeta", imeta})
+		tags = append(tags, imeta)
 	}
 
 	event := nostr.Event{

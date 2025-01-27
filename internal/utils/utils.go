@@ -29,26 +29,17 @@ import (
 	"github.com/h2non/filetype"
 	"github.com/h2non/filetype/types"
 	"github.com/nbd-wtf/go-nostr"
-	"github.com/nbd-wtf/go-nostr/nip19"
 	_ "golang.org/x/image/webp"
 )
 
 // ValidateInput checks if the provided video URL, private key, title, and published_at are valid
-func ValidateInput(videoURL, privateKey, title, publishedAt string) error {
+func ValidateInput(videoURL, title, publishedAt string) error {
 	if videoURL == "" {
 		return errors.New("video URL cannot be empty")
 	}
 
 	if _, err := url.ParseRequestURI(videoURL); err != nil {
 		return errors.New("invalid video URL")
-	}
-
-	if privateKey == "" {
-		return errors.New("private key cannot be empty")
-	}
-
-	if title == "" {
-		return errors.New("title cannot be empty")
 	}
 
 	if publishedAt == "" {
@@ -70,7 +61,7 @@ func DownloadVideo(videoURL string) (string, error) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
 		return "", fmt.Errorf("failed to download video: %s", resp.Status)
 	}
 
@@ -184,7 +175,7 @@ func ExtractMediaInfo(imagePath string, fileType string) (int, int, string, erro
 	return width, height, imageHash, nil
 }
 
-func UploadFile(server, filePath, privKey string) (map[string]interface{}, error) {
+func UploadFile(server, filePath string, signer EventSigner) (map[string]interface{}, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
 		return nil, err
@@ -223,7 +214,7 @@ func UploadFile(server, filePath, privKey string) (map[string]interface{}, error
 	file.Seek(0, io.SeekStart)
 
 	// Create authorization event
-	authEventJSON, err := createAuthorizationEvent(privKey, "upload", [][]string{
+	authEventJSON, err := createAuthorizationEvent(signer, "upload", [][]string{
 		{"x", sha256Hash},
 		{"t", "upload"},
 		{"expiration", fmt.Sprintf("%d", time.Now().Add(5*time.Minute).Unix())},
@@ -269,7 +260,7 @@ func UploadFile(server, filePath, privKey string) (map[string]interface{}, error
 }
 
 // Add a function to create the authorization event
-func createAuthorizationEvent(privKey string, verb string, tags [][]string) (string, error) {
+func createAuthorizationEvent(signer EventSigner, verb string, tags [][]string) (string, error) {
 	// Create a new event
 	event := nostr.Event{
 		Kind:      24242,
@@ -286,25 +277,15 @@ func createAuthorizationEvent(privKey string, verb string, tags [][]string) (str
 		event.Tags = append(event.Tags, tag)
 	}
 
-	// Convert the private key from hex
-	secKey := privKey
-	if strings.HasPrefix(privKey, "nsec") {
-		var err error
-		secKey, err = ConvertNIP19ToHex(privKey)
-		if err != nil {
-			return "", err
-		}
-	}
-
 	// Set the pubkey
-	pubKeyHex, err := nostr.GetPublicKey(secKey)
+	pubKeyHex, err := signer.GetPublicKey()
 	if err != nil {
 		return "", err
 	}
 	event.PubKey = pubKeyHex
 
 	// Sign the event
-	err = event.Sign(secKey)
+	err = signer.Sign(&event)
 	if err != nil {
 		return "", err
 	}
@@ -319,18 +300,7 @@ func createAuthorizationEvent(privKey string, verb string, tags [][]string) (str
 	return encodedJSON, nil
 }
 
-func ConvertNIP19ToHex(key string) (string, error) {
-	if strings.HasPrefix(key, "nsec") {
-		_, decoded, err := nip19.Decode(key)
-		if err != nil {
-			return "", fmt.Errorf("failed to decode NIP-19 key: %v", err)
-		}
-		return decoded.(string), nil
-	}
-	return key, nil
-}
-
-func PublishEvent(event nostr.Event, hexKey string, relays []string) {
+func PublishEvent(event nostr.Event, signer EventSigner, relays []string) {
 	for _, relayURL := range relays {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
@@ -346,7 +316,7 @@ func PublishEvent(event nostr.Event, hexKey string, relays []string) {
 			if strings.HasPrefix(err.Error(), "msg: auth-required:") {
 
 				authErr := relay.Auth(ctx, func(authEvent *nostr.Event) error {
-					return authEvent.Sign(hexKey)
+					return signer.Sign(authEvent)
 				})
 				if authErr != nil {
 					log.Printf("Error sending auth event to relay %s: %v", relayURL, authErr)

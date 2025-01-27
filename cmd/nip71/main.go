@@ -28,7 +28,7 @@ var (
 	r           = flag.String("r", "", "Relay address or path to relays.json file (short flag)")
 	descriptor  = flag.String("descriptor", "", "Descriptor for the 'd' tag")
 	blossom     = flag.String("blossom", "https://cdn.nostrcheck.me", "Base URL for the blossom server")
-	hexKey      = ""
+	signer      utils.EventSigner
 )
 
 func parseAndInitParams() {
@@ -42,9 +42,9 @@ func parseAndInitParams() {
 	}
 
 	var err error
-	hexKey, err = utils.ConvertNIP19ToHex(*privateKey)
+	signer, err = utils.NewLocalSigner(*privateKey)
 	if err != nil {
-		log.Fatalf("Error converting NIP-19 key to hex: %v", err)
+		log.Fatalf("Error creating signer: %v", err)
 	}
 }
 
@@ -67,7 +67,7 @@ func main() {
 
 	var videoPath string
 	if *videoFile != "" {
-		uploadInfo, err := utils.UploadFile(*blossom, *videoFile, hexKey)
+		uploadInfo, err := utils.UploadFile(*blossom, *videoFile, signer)
 		if err != nil {
 			log.Fatalf("Error uploading video file: %v", err)
 		}
@@ -82,13 +82,9 @@ func main() {
 		}
 		defer os.Remove(videoPath)
 	}
-	// Set title to videoURL if title is unset
-	if *title == "" {
-		*title = *videoURL
-	}
 
 	// Validate input parameters
-	if err := utils.ValidateInput(*videoURL, hexKey, *title, *publishedAt); err != nil {
+	if err := utils.ValidateInput(*videoURL, *title, *publishedAt); err != nil {
 		log.Fatalf("Input validation error: %v", err)
 	}
 
@@ -102,7 +98,7 @@ func main() {
 	event := createNip71Event(height, width, videoHash, title, publishedAt, videoURL, description, descriptor)
 
 	// Sign the event with the provided private key
-	if err := event.Sign(hexKey); err != nil {
+	if err := signer.Sign(&event); err != nil {
 		log.Fatalf("Error signing event: %v", err)
 	}
 
@@ -116,7 +112,7 @@ func main() {
 			relays = loadRelays(*r)
 		}
 		if len(relays) > 0 {
-			utils.PublishEvent(event, hexKey, relays)
+			utils.PublishEvent(event, signer, relays)
 		}
 	}
 }

@@ -1,4 +1,4 @@
 *.exe
-bip71-cli
-bip68-cli
+nip71-cli
+nip68-cli
 relays.json
