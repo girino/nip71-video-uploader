@@ -88,7 +88,12 @@ func main() {
 			log.Fatalf("Error uploading image file: %v", err)
 		}
 		imageURL := uploadInfo["url"].(string)
-		*publishedAt = fmt.Sprintf("%d", int64(uploadInfo["uploaded"].(float64)))
+		uploadedAt, ok := uploadInfo["uploaded"].(float64)
+		if ok {
+			*publishedAt = fmt.Sprintf("%d", int64(uploadedAt))
+		} else {
+			*publishedAt = fmt.Sprintf("%d", time.Now().Unix())
+		}
 
 		width, height, hash, err := utils.ExtractMediaInfo(imageFile, "image")
 		if err != nil {
