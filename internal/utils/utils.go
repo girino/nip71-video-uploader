@@ -102,7 +102,7 @@ func GetVideoDimensions(filePath string) (int, int, error) {
 	cmd := exec.Command("ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0", "'"+filePath+"'")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, fmt.Errorf("failed to get video dimensions: %v", err)
 	}
 
 	dimensions := strings.TrimSpace(string(output))
@@ -113,12 +113,12 @@ func GetVideoDimensions(filePath string) (int, int, error) {
 
 	width, err := strconv.Atoi(parts[0])
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, fmt.Errorf("failed to parse video width: %v", err)
 	}
 
 	height, err := strconv.Atoi(parts[1])
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, fmt.Errorf("failed to parse video height: %v", err)
 	}
 
 	return width, height, nil
@@ -127,24 +127,25 @@ func GetVideoDimensions(filePath string) (int, int, error) {
 func GetMediaDimensions(filePath string, fileType string) (int, int, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, fmt.Errorf("error opening file: %v", err)
 	}
 	defer file.Close()
 
 	head := make([]byte, 261)
 	_, err = file.Read(head)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, fmt.Errorf("error reading file: %v", err)
 	}
 
 	kind, err := filetype.Match(head)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, fmt.Errorf("error matching file: %v", err)
 	}
 
 	if kind == types.Unknown {
 		return 0, 0, errors.New("unknown file type")
 	}
+	file.Close()
 
 	if strings.HasPrefix(kind.MIME.Value, "image") && fileType == "image" {
 		return GetImageDimensions(filePath)
@@ -158,18 +159,18 @@ func GetMediaDimensions(filePath string, fileType string) (int, int, error) {
 func ExtractMediaInfo(imagePath string, fileType string) (int, int, string, error) {
 	width, height, err := GetMediaDimensions(imagePath, fileType) // Assuming the same function can be used for images
 	if err != nil {
-		return 0, 0, "", err
+		return 0, 0, "", fmt.Errorf("GetMediaDimensions: %v", err)
 	}
 
 	file, err := os.Open(imagePath)
 	if err != nil {
-		return 0, 0, "", err
+		return 0, 0, "", fmt.Errorf("open(%s): %v", imagePath, err)
 	}
 	defer file.Close()
 
 	hash := sha256.New()
 	if _, err := io.Copy(hash, file); err != nil {
-		return 0, 0, "", err
+		return 0, 0, "", fmt.Errorf("hashing %s: %v", imagePath, err)
 	}
 	imageHash := fmt.Sprintf("%x", hash.Sum(nil))
 	return width, height, imageHash, nil

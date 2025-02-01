@@ -137,6 +137,8 @@ func main() {
 		}
 		if len(relays) > 0 {
 			utils.PublishEvent(event, signer, relays)
+		} else {
+			log.Fatalf("No relays found to publish the event. Relay parameter: %s", *relay)
 		}
 	}
 }
