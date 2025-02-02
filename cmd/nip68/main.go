@@ -184,7 +184,7 @@ func createNip68Event(imetaTags [][]string, title *string, publishedAt *string, 
 	defer cancel()
 	pubKey, err := signer.GetPublicKey(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("Error getting public key: %v", err)
+		return nil, fmt.Errorf("error getting public key: %v", err)
 	}
 
 	event := nostr.Event{
@@ -196,7 +196,7 @@ func createNip68Event(imetaTags [][]string, title *string, publishedAt *string, 
 	}
 	err = utils.Pow(&event, *diff)
 	if err != nil {
-		return nil, fmt.Errorf("Error calculating proof of work: %v", err)
+		return nil, fmt.Errorf("error calculating proof of work: %v", err)
 	}
 
 	return &event, nil
