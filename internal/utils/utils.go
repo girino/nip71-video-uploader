@@ -31,6 +31,7 @@ import (
 	"github.com/h2non/filetype"
 	"github.com/h2non/filetype/types"
 	"github.com/nbd-wtf/go-nostr"
+	"github.com/nbd-wtf/go-nostr/nip13"
 	_ "golang.org/x/image/webp"
 )
 
@@ -221,7 +222,7 @@ func ExtractFrameFromVideo(videoPath string) (string, error) {
 	return framePath, nil
 }
 
-func UploadFile(server, filePath string, signer EventSigner) (map[string]interface{}, error) {
+func UploadFile(server, filePath string, signer nostr.Keyer) (map[string]interface{}, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
 		return nil, err
@@ -306,7 +307,7 @@ func UploadFile(server, filePath string, signer EventSigner) (map[string]interfa
 }
 
 // Add a function to create the authorization event
-func createAuthorizationEvent(signer EventSigner, verb string, tags [][]string) (string, error) {
+func createAuthorizationEvent(signer nostr.Keyer, verb string, tags [][]string) (string, error) {
 	// Create a new event
 	event := nostr.Event{
 		Kind:      24242,
@@ -324,14 +325,19 @@ func createAuthorizationEvent(signer EventSigner, verb string, tags [][]string) 
 	}
 
 	// Set the pubkey
-	pubKeyHex, err := signer.GetPublicKey()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	pubKeyHex, err := signer.GetPublicKey(ctx)
 	if err != nil {
 		return "", err
 	}
 	event.PubKey = pubKeyHex
 
 	// Sign the event
-	err = signer.Sign(&event)
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel2()
+	err = signer.SignEvent(ctx2, &event)
 	if err != nil {
 		return "", err
 	}
@@ -346,9 +352,9 @@ func createAuthorizationEvent(signer EventSigner, verb string, tags [][]string) 
 	return encodedJSON, nil
 }
 
-func PublishEvent(event nostr.Event, signer EventSigner, relays []string) {
+func PublishEvent(event *nostr.Event, signer nostr.Keyer, relays []string) {
 	for _, relayURL := range relays {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		relay, err := nostr.RelayConnect(ctx, relayURL)
 		if err != nil {
@@ -357,19 +363,23 @@ func PublishEvent(event nostr.Event, signer EventSigner, relays []string) {
 		}
 		defer relay.Close()
 
-		err = relay.Publish(ctx, event)
+		err = relay.Publish(ctx, *event)
 		if err != nil {
+			// longer timeout because it might involve a remote signature
+			ctx2, cancel2 := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel2()
+
 			if strings.HasPrefix(err.Error(), "msg: auth-required:") {
 
-				authErr := relay.Auth(ctx, func(authEvent *nostr.Event) error {
-					return signer.Sign(authEvent)
+				authErr := relay.Auth(ctx2, func(authEvent *nostr.Event) error {
+					return signer.SignEvent(ctx2, authEvent)
 				})
 				if authErr != nil {
 					log.Printf("Error sending auth event to relay %s: %v", relayURL, authErr)
 					continue
 				}
 
-				err = relay.Publish(ctx, event)
+				err = relay.Publish(ctx2, *event)
 				if err != nil {
 					log.Printf("Error publishing event to relay %s after auth: %v", relayURL, err)
 				} else {
@@ -398,4 +408,15 @@ func LoadRelaysFromFile(filePath string) []string {
 		log.Fatalf("Error decoding %s: %v", filePath, err)
 	}
 	return relays
+}
+
+func Pow(event *nostr.Event, diff int) error {
+	if diff > 0 {
+		nounce, err := nip13.DoWork(context.Background(), *event, diff)
+		if err != nil {
+			return fmt.Errorf("error generating proof of work: %v", err)
+		}
+		event.Tags = append(event.Tags, nounce)
+	}
+	return nil
 }

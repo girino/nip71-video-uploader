@@ -5,6 +5,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -15,6 +16,8 @@ import (
 	"go-cli-utility/internal/utils"
 
 	"github.com/nbd-wtf/go-nostr"
+	"github.com/nbd-wtf/go-nostr/keyer"
+	"github.com/nbd-wtf/go-nostr/nip19"
 )
 
 var (
@@ -28,7 +31,9 @@ var (
 	r           = flag.String("r", "", "Relay address or path to relays.json file (short flag)")
 	descriptor  = flag.String("descriptor", "", "Descriptor for the 'd' tag")
 	blossom     = flag.String("blossom", "https://cdn.nostrcheck.me", "Base URL for the blossom server")
-	signer      utils.EventSigner
+	diff        = flag.Int("diff", 16, "Proof of work difficulty")
+	isLegacy    = flag.Bool("legacy", false, "Use legacy event kind")
+	signer      nostr.Keyer
 )
 
 func parseAndInitParams() {
@@ -42,7 +47,18 @@ func parseAndInitParams() {
 	}
 
 	var err error
-	signer, err = utils.NewLocalSigner(*privateKey)
+	var ok bool
+	if strings.HasPrefix(*privateKey, "nsec") {
+		_, decodedKey, err := nip19.Decode(*privateKey)
+		if err != nil {
+			log.Fatalf("Error decoding private key: %v", err)
+		}
+		*privateKey, ok = decodedKey.(string)
+		if !ok {
+			log.Fatalf("Error asserting type of decoded private key")
+		}
+	}
+	signer, err = keyer.NewPlainKeySigner(*privateKey)
 	if err != nil {
 		log.Fatalf("Error creating signer: %v", err)
 	}
@@ -100,10 +116,15 @@ func main() {
 	}
 
 	// Create the NIP-71 event with the extracted video information
-	event := createNip71Event(height, width, fileSize, videoHash, bhash, mime, title, publishedAt, videoURL, description, descriptor)
+	event, err := createNip71Event(height, width, fileSize, videoHash, bhash, mime, title, publishedAt, videoURL, description, descriptor)
+	if err != nil {
+		log.Fatalf("Error creating NIP-71 event: %v", err)
+	}
 
 	// Sign the event with the provided private key
-	if err := signer.Sign(&event); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := signer.SignEvent(ctx, event); err != nil {
 		log.Fatalf("Error signing event: %v", err)
 	}
 
@@ -111,8 +132,9 @@ func main() {
 	fmt.Println("Generated Event Data:", event)
 
 	// Transmit the event to relays if the relay flag is set
+	var relays []string
 	if *relay != "" || *r != "" {
-		relays := loadRelays(*relay)
+		relays = loadRelays(*relay)
 		if len(relays) == 0 {
 			relays = loadRelays(*r)
 		}
@@ -120,13 +142,19 @@ func main() {
 			utils.PublishEvent(event, signer, relays)
 		}
 	}
+
 }
 
-func createNip71Event(height int, width int, fileSize int64, videoHash string, bhash string, mime string, title *string, publishedAt *string, videoURL *string, description *string, descriptor *string) nostr.Event {
-	eventKind := 34235
+func createNip71Event(height int, width int, fileSize int64, videoHash string, bhash string, mime string, title *string, publishedAt *string, videoURL *string, description *string, descriptor *string) (*nostr.Event, error) {
+	var eventKind int
+	if *isLegacy {
+		eventKind = 34235
+	} else {
+		eventKind = 21
+	}
 	alt := "Horizontal Video"
 	if height > width {
-		eventKind = 34236
+		eventKind += 1 // 22 or 34236
 		alt = "Vertical Video"
 	}
 
@@ -135,11 +163,18 @@ func createNip71Event(height int, width int, fileSize int64, videoHash string, b
 		dTag = *descriptor
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pubKey, err := signer.GetPublicKey(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("Error getting public key: %v", err)
+	}
+
 	event := nostr.Event{
 		Kind:      eventKind,
+		PubKey:    pubKey,
 		CreatedAt: nostr.Now(),
 		Tags: nostr.Tags{
-			{"d", dTag},
 			{"alt", alt},
 			{"title", *title},
 			{"published_at", *publishedAt},
@@ -154,6 +189,14 @@ func createNip71Event(height int, width int, fileSize int64, videoHash string, b
 		},
 		Content: *description,
 	}
+	if *isLegacy {
+		event.Tags = append(event.Tags, nostr.Tag{"d", dTag})
+	}
 
-	return event
+	err = utils.Pow(&event, *diff)
+	if err != nil {
+		return nil, fmt.Errorf("Error calculating proof of work: %v", err)
+	}
+
+	return &event, nil
 }

@@ -5,6 +5,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -15,6 +16,8 @@ import (
 	"go-cli-utility/internal/utils"
 
 	"github.com/nbd-wtf/go-nostr"
+	"github.com/nbd-wtf/go-nostr/keyer"
+	"github.com/nbd-wtf/go-nostr/nip19"
 )
 
 type stringSlice []string
@@ -38,7 +41,8 @@ var (
 	relay       = flag.String("relay", "", "Relay address or path to relays.json file")
 	r           = flag.String("r", "", "Relay address or path to relays.json file (short flag)")
 	blossom     = flag.String("blossom", "https://cdn.nostrcheck.me", "Base URL for the blossom server")
-	signer      utils.EventSigner
+	diff        = flag.Int("diff", 16, "Proof of work difficulty")
+	signer      nostr.Keyer
 )
 
 func init() {
@@ -57,7 +61,18 @@ func parseAndInitParams() {
 	}
 
 	var err error
-	signer, err = utils.NewLocalSigner(*privateKey)
+	var ok bool
+	if strings.HasPrefix(*privateKey, "nsec") {
+		_, decodedKey, err := nip19.Decode(*privateKey)
+		if err != nil {
+			log.Fatalf("Error decoding private key: %v", err)
+		}
+		*privateKey, ok = decodedKey.(string)
+		if !ok {
+			log.Fatalf("Error asserting type of decoded private key")
+		}
+	}
+	signer, err = keyer.NewPlainKeySigner(*privateKey)
 	if err != nil {
 		log.Fatalf("Error creating event signer: %v", err)
 	}
@@ -109,10 +124,15 @@ func main() {
 	}
 
 	// Create the NIP-68 event with the extracted image information
-	event := createNip68Event(imetaTags, title, publishedAt, description)
+	event, err := createNip68Event(imetaTags, title, publishedAt, description)
+	if err != nil {
+		log.Fatalf("Error creating NIP-68 event: %v", err)
+	}
 
 	// Sign the event with the provided private key
-	if err := signer.Sign(&event); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := signer.SignEvent(ctx, event); err != nil {
 		log.Fatalf("Error signing event: %v", err)
 	}
 
@@ -148,7 +168,7 @@ func addImageIMetaTag(imagePath string, imageURL string) nostr.Tag {
 	return tag
 }
 
-func createNip68Event(imetaTags [][]string, title *string, publishedAt *string, description *string) nostr.Event {
+func createNip68Event(imetaTags [][]string, title *string, publishedAt *string, description *string) (*nostr.Event, error) {
 	eventKind := 20 // Event kind for picture-first feeds
 
 	tags := nostr.Tags{
@@ -160,12 +180,24 @@ func createNip68Event(imetaTags [][]string, title *string, publishedAt *string, 
 		tags = append(tags, imeta)
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pubKey, err := signer.GetPublicKey(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("Error getting public key: %v", err)
+	}
+
 	event := nostr.Event{
 		Kind:      eventKind,
+		PubKey:    pubKey,
 		CreatedAt: nostr.Now(),
 		Tags:      tags,
 		Content:   *description,
 	}
+	err = utils.Pow(&event, *diff)
+	if err != nil {
+		return nil, fmt.Errorf("Error calculating proof of work: %v", err)
+	}
 
-	return event
+	return &event, nil
 }
