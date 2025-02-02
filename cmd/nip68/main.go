@@ -95,12 +95,7 @@ func main() {
 			*publishedAt = fmt.Sprintf("%d", time.Now().Unix())
 		}
 
-		width, height, hash, err := utils.ExtractMediaInfo(imageFile, "image")
-		if err != nil {
-			log.Fatalf("Error extracting image information: %v", err)
-		}
-		tag := nostr.Tag{"imeta", fmt.Sprintf("dim %dx%d", width, height), fmt.Sprintf("url %s", imageURL), "m image/jpeg", fmt.Sprintf("x %s", hash)}
-		imetaTags = append(imetaTags, tag)
+		imetaTags = append(imetaTags, addImageIMetaTag(imageFile, imageURL))
 	}
 
 	for _, imageURL := range imageURLs {
@@ -110,12 +105,7 @@ func main() {
 		}
 		defer os.Remove(imagePath)
 
-		width, height, hash, err := utils.ExtractMediaInfo(imagePath, "image")
-		if err != nil {
-			log.Fatalf("Error extracting image information: %v", err)
-		}
-		tag := nostr.Tag{"imeta", fmt.Sprintf("dim %dx%d", width, height), fmt.Sprintf("url %s", imageURL), "m image/jpeg", fmt.Sprintf("x %s", hash)}
-		imetaTags = append(imetaTags, tag)
+		imetaTags = append(imetaTags, addImageIMetaTag(imagePath, imageURL))
 	}
 
 	// Create the NIP-68 event with the extracted image information
@@ -141,6 +131,21 @@ func main() {
 			log.Fatalf("No relays found to publish the event. Relay parameter: %s", *relay)
 		}
 	}
+}
+
+func addImageIMetaTag(imagePath string, imageURL string) nostr.Tag {
+	// ignoring fileSize
+	width, height, _, fileHash, bhash, mime, err := utils.ExtractMediaInfo(imagePath, "image")
+	if err != nil {
+		log.Fatalf("Error extracting image information: %v", err)
+	}
+	tag := nostr.Tag{"imeta",
+		"url " + imageURL,
+		"x " + fileHash,
+		fmt.Sprintf("dim %dx%d", width, height),
+		"m " + mime,
+		fmt.Sprintf("blurhash %s", bhash)}
+	return tag
 }
 
 func createNip68Event(imetaTags [][]string, title *string, publishedAt *string, description *string) nostr.Event {

@@ -94,13 +94,13 @@ func main() {
 	}
 
 	// Extract video information
-	width, height, videoHash, err := utils.ExtractMediaInfo(videoPath, "video")
+	width, height, fileSize, videoHash, bhash, mime, err := utils.ExtractMediaInfo(videoPath, "video")
 	if err != nil {
 		log.Fatalf("Error extracting video information: %v", err)
 	}
 
 	// Create the NIP-71 event with the extracted video information
-	event := createNip71Event(height, width, videoHash, title, publishedAt, videoURL, description, descriptor)
+	event := createNip71Event(height, width, fileSize, videoHash, bhash, mime, title, publishedAt, videoURL, description, descriptor)
 
 	// Sign the event with the provided private key
 	if err := signer.Sign(&event); err != nil {
@@ -122,10 +122,12 @@ func main() {
 	}
 }
 
-func createNip71Event(height int, width int, videoHash string, title *string, publishedAt *string, videoURL *string, description *string, descriptor *string) nostr.Event {
+func createNip71Event(height int, width int, fileSize int64, videoHash string, bhash string, mime string, title *string, publishedAt *string, videoURL *string, description *string, descriptor *string) nostr.Event {
 	eventKind := 34235
+	alt := "Horizontal Video"
 	if height > width {
 		eventKind = 34236
+		alt = "Vertical Video"
 	}
 
 	dTag := videoHash
@@ -138,9 +140,17 @@ func createNip71Event(height int, width int, videoHash string, title *string, pu
 		CreatedAt: nostr.Now(),
 		Tags: nostr.Tags{
 			{"d", dTag},
+			{"alt", alt},
 			{"title", *title},
 			{"published_at", *publishedAt},
-			{"imeta", fmt.Sprintf("dim %dx%d", width, height), "url " + *videoURL, "m video/mp4"},
+			{"imeta",
+				"url " + *videoURL,
+				"m " + mime,
+				"alt " + alt,
+				"x " + videoHash,
+				fmt.Sprintf("size %d", fileSize),
+				fmt.Sprintf("dim %dx%d", width, height),
+				fmt.Sprintf("blurhash %s", bhash)},
 		},
 		Content: *description,
 	}

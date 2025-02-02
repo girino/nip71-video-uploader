@@ -22,10 +22,12 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/buckket/go-blurhash"
 	"github.com/h2non/filetype"
 	"github.com/h2non/filetype/types"
 	"github.com/nbd-wtf/go-nostr"
@@ -80,100 +82,143 @@ func DownloadVideo(videoURL string) (string, error) {
 }
 
 // GetImageDimensions returns the width and height of an image file
-func GetImageDimensions(filePath string) (int, int, error) {
+func GetImageDimensions(filePath string) (int, int, string, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, "", err
 	}
 	defer file.Close()
 
-	img, _, err := image.DecodeConfig(file)
+	img, _, err := image.Decode(file)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, "", err
 	}
 
-	return img.Width, img.Height, nil
+	width := img.Bounds().Dx()
+	height := img.Bounds().Dy()
+
+	// Generate the BlurHash string
+	bhash, err := generateBlurhash(img)
+	if err != nil {
+		return 0, 0, "", err
+	}
+
+	return width, height, bhash, nil
 }
 
 // GetVideoDimensions uses ffprobe to get the dimensions of the video
-func GetVideoDimensions(filePath string) (int, int, error) {
+func GetVideoDimensions(filePath string) (int, int, string, error) {
 
-	// Get video dimensions using ffprobe
-	cmd := exec.Command("ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0", "'"+filePath+"'")
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return 0, 0, fmt.Errorf("failed to get video dimensions: %v", err)
+	framePath := filepath.Join(os.TempDir(), "frame.jpg")
+	cmd := exec.Command("ffmpeg", "-i", filePath, "-ss", "00:00:01.000", "-vframes", "1", framePath)
+	if err := cmd.Run(); err != nil {
+		return 0, 0, "", fmt.Errorf("extracting frame from video: %v", err)
 	}
+	defer os.Remove(framePath)
 
-	dimensions := strings.TrimSpace(string(output))
-	parts := strings.Split(dimensions, ",")
-	if len(parts) != 2 {
-		return 0, 0, errors.New("failed to get video dimensions")
-	}
-
-	width, err := strconv.Atoi(parts[0])
-	if err != nil {
-		return 0, 0, fmt.Errorf("failed to parse video width: %v", err)
-	}
-
-	height, err := strconv.Atoi(parts[1])
-	if err != nil {
-		return 0, 0, fmt.Errorf("failed to parse video height: %v", err)
-	}
-
-	return width, height, nil
+	return GetImageDimensions(framePath)
 }
 
-func GetMediaDimensions(filePath string, fileType string) (int, int, error) {
+func generateBlurhash(img image.Image) (string, error) {
+	x, y := 9, 7
+	if img.Bounds().Dx() < img.Bounds().Dy() {
+		x, y = y, x
+	}
+
+	// Generate the BlurHash string
+	bhash, err := blurhash.Encode(x, y, img)
+	if err != nil {
+		return "", fmt.Errorf("generating blurhash: %v", err)
+	}
+	return bhash, nil
+}
+
+func GetMediaDimensions(filePath string, fileType string) (int, int, string, string, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
-		return 0, 0, fmt.Errorf("error opening file: %v", err)
+		return 0, 0, "", "", fmt.Errorf("error opening file: %v", err)
 	}
 	defer file.Close()
 
 	head := make([]byte, 261)
 	_, err = file.Read(head)
 	if err != nil {
-		return 0, 0, fmt.Errorf("error reading file: %v", err)
+		return 0, 0, "", "", fmt.Errorf("error reading file: %v", err)
 	}
 
 	kind, err := filetype.Match(head)
 	if err != nil {
-		return 0, 0, fmt.Errorf("error matching file: %v", err)
+		return 0, 0, "", "", fmt.Errorf("error matching file: %v", err)
 	}
 
 	if kind == types.Unknown {
-		return 0, 0, errors.New("unknown file type")
+		return 0, 0, "", "", errors.New("unknown file type")
 	}
 	file.Close()
 
 	if strings.HasPrefix(kind.MIME.Value, "image") && fileType == "image" {
-		return GetImageDimensions(filePath)
+		width, height, bhash, nil := GetImageDimensions(filePath)
+		return width, height, bhash, kind.MIME.Value, nil
 	} else if strings.HasPrefix(kind.MIME.Value, "video") && fileType == "video" {
-		return GetVideoDimensions(filePath)
+		width, height, bhash, nil := GetVideoDimensions(filePath)
+		return width, height, bhash, kind.MIME.Value, nil
 	} else {
-		return 0, 0, errors.New("unsupported media type")
+		return 0, 0, "", "", errors.New("unsupported media type")
 	}
 }
 
-func ExtractMediaInfo(imagePath string, fileType string) (int, int, string, error) {
-	width, height, err := GetMediaDimensions(imagePath, fileType) // Assuming the same function can be used for images
+func ExtractMediaInfo(imagePath string, fileType string) (int, int, int64, string, string, string, error) {
+	width, height, bhash, mime, err := GetMediaDimensions(imagePath, fileType) // Assuming the same function can be used for images
 	if err != nil {
-		return 0, 0, "", fmt.Errorf("GetMediaDimensions: %v", err)
+		return 0, 0, 0, "", "", "", fmt.Errorf("GetMediaDimensions: %v", err)
 	}
 
 	file, err := os.Open(imagePath)
 	if err != nil {
-		return 0, 0, "", fmt.Errorf("open(%s): %v", imagePath, err)
+		return 0, 0, 0, "", "", "", fmt.Errorf("open(%s): %v", imagePath, err)
 	}
 	defer file.Close()
 
 	hash := sha256.New()
 	if _, err := io.Copy(hash, file); err != nil {
-		return 0, 0, "", fmt.Errorf("hashing %s: %v", imagePath, err)
+		return 0, 0, 0, "", "", "", fmt.Errorf("hashing %s: %v", imagePath, err)
 	}
-	imageHash := fmt.Sprintf("%x", hash.Sum(nil))
-	return width, height, imageHash, nil
+	fileHash := fmt.Sprintf("%x", hash.Sum(nil))
+
+	// get file size
+	fileInfo, err := file.Stat()
+	if err != nil {
+		return 0, 0, 0, "", "", "", fmt.Errorf("stat(%s): %v", imagePath, err)
+	}
+	fileSize := fileInfo.Size()
+
+	return width, height, fileSize, fileHash, bhash, mime, nil
+}
+
+// LoadImage loads an image from the specified file path.
+func LoadImage(filePath string) (image.Image, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("open(%s): %v", filePath, err)
+	}
+	defer file.Close()
+
+	img, _, err := image.Decode(file)
+	if err != nil {
+		return nil, fmt.Errorf("decode(%s): %v", filePath, err)
+	}
+
+	return img, nil
+}
+
+// ExtractFrameFromVideo extracts a frame from the video file and saves it as an image.
+func ExtractFrameFromVideo(videoPath string) (string, error) {
+	framePath := filepath.Join(os.TempDir(), "frame.jpg")
+	cmd := exec.Command("ffmpeg", "-i", videoPath, "-ss", "00:00:01.000", "-vframes", "1", framePath)
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("extracting frame from video: %v", err)
+	}
+	return framePath, nil
 }
 
 func UploadFile(server, filePath string, signer EventSigner) (map[string]interface{}, error) {
