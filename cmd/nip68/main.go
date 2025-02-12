@@ -194,6 +194,10 @@ func createNip68Event(imetaTags [][]string, title *string, publishedAt *string, 
 		Tags:      tags,
 		Content:   *description,
 	}
+
+	// if description contains any hashtags, add them as "t" tags
+	utils.ExtractHashtags(&event)
+
 	err = utils.Pow(&event, *diff)
 	if err != nil {
 		return nil, fmt.Errorf("error calculating proof of work: %v", err)

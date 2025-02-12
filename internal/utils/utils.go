@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -293,7 +294,7 @@ func UploadFile(server, filePath string, signer nostr.Keyer) (map[string]interfa
 		resp.StatusCode != http.StatusCreated &&
 		resp.StatusCode != http.StatusAccepted {
 		bodyBytes, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("upload failed: %s", string(bodyBytes))
+		return nil, fmt.Errorf("upload failed: %s, code %d", string(bodyBytes), resp.StatusCode)
 	}
 
 	// Parse response
@@ -419,4 +420,16 @@ func Pow(event *nostr.Event, diff int) error {
 		event.Tags = append(event.Tags, nounce)
 	}
 	return nil
+}
+
+// ExtractHashtags extracts hashtags from a given text
+func ExtractHashtags(event *nostr.Event) {
+	if event.Content == "" {
+		return
+	}
+	re := regexp.MustCompile(`#\w+`)
+	tags := re.FindAllString(event.Content, -1)
+	for _, tag := range tags {
+		event.Tags = append(event.Tags, nostr.Tag{"t", strings.TrimPrefix(tag, "#")})
+	}
 }

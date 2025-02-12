@@ -21,19 +21,20 @@ import (
 )
 
 var (
-	videoURL    = flag.String("url", "", "URL of the video file")
-	videoFile   = flag.String("file", "", "Path to the video file")
-	privateKey  = flag.String("key", "", "Private key for signing the event")
-	title       = flag.String("title", "", "Title of the video")
-	description = flag.String("description", "", "Description of the video")
-	publishedAt = flag.String("published_at", "", "Timestamp when the video was published (unix seconds)")
-	relay       = flag.String("relay", "", "Relay address or path to relays.json file")
-	r           = flag.String("r", "", "Relay address or path to relays.json file (short flag)")
-	descriptor  = flag.String("descriptor", "", "Descriptor for the 'd' tag")
-	blossom     = flag.String("blossom", "https://cdn.nostrcheck.me", "Base URL for the blossom server")
-	diff        = flag.Int("diff", 16, "Proof of work difficulty")
-	isLegacy    = flag.Bool("legacy", false, "Use legacy event kind")
-	signer      nostr.Keyer
+	videoURL       = flag.String("url", "", "URL of the video file")
+	videoFile      = flag.String("file", "", "Path to the video file")
+	privateKey     = flag.String("key", "", "Private key for signing the event")
+	title          = flag.String("title", "", "Title of the video")
+	description    = flag.String("description", "", "Description of the video")
+	publishedAt    = flag.String("published_at", "", "Timestamp when the video was published (unix seconds)")
+	relay          = flag.String("relay", "", "Relay address or path to relays.json file")
+	r              = flag.String("r", "", "Relay address or path to relays.json file (short flag)")
+	descriptor     = flag.String("descriptor", "", "Descriptor for the 'd' tag")
+	blossom        = flag.String("blossom", "https://cdn.nostrcheck.me", "Base URL for the blossom server")
+	diff           = flag.Int("diff", 16, "Proof of work difficulty")
+	isLegacy       = flag.Bool("legacy", false, "Use legacy event kind")
+	isLongDuration = flag.Bool("long", false, "Use long/horizontal video event kind")
+	signer         nostr.Keyer
 )
 
 func parseAndInitParams() {
@@ -153,7 +154,7 @@ func createNip71Event(height int, width int, fileSize int64, videoHash string, b
 		eventKind = 21
 	}
 	alt := "Horizontal Video"
-	if height > width {
+	if !(*isLongDuration) {
 		eventKind += 1 // 22 or 34236
 		alt = "Vertical Video"
 	}
@@ -192,6 +193,9 @@ func createNip71Event(height int, width int, fileSize int64, videoHash string, b
 	if *isLegacy {
 		event.Tags = append(event.Tags, nostr.Tag{"d", dTag})
 	}
+
+	// if description contains any hashtags, add them as "t" tags
+	utils.ExtractHashtags(&event)
 
 	err = utils.Pow(&event, *diff)
 	if err != nil {
