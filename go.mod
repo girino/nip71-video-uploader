@@ -6,7 +6,7 @@ require (
 	github.com/buckket/go-blurhash v1.1.0
 	github.com/h2non/filetype v1.1.3
 	github.com/nbd-wtf/go-nostr v0.49.2
-	golang.org/x/image v0.23.0
+	golang.org/x/image v0.41.0
 )
 
 require (
